@@ -202,6 +202,67 @@ function assetUrl(string $path): string
     return appUrl($path) . '?v=' . $version;
 }
 
+// URL hashing: generate and verify signed tokens for opaque links
+define('URL_HASH_SECRET', envValue('URL_HASH_SECRET', SSO_SHARED_SECRET));
+define('URL_HASH_ALGO', 'sha256');
+
+function createUrlToken(string $path, int $ttl = 3600): string
+{
+    $payload = [
+        'p' => $path,
+        'e' => time() + $ttl,
+    ];
+
+    $json = json_encode($payload);
+    $sig = hash_hmac(URL_HASH_ALGO, $json, URL_HASH_SECRET, true);
+
+    $b64 = rtrim(strtr(base64_encode($json), '+/', '-_'), '=');
+    $s64 = rtrim(strtr(base64_encode($sig), '+/', '-_'), '=');
+
+    return $b64 . '.' . $s64;
+}
+
+function verifyUrlToken(string $token): ?array
+{
+    if (strpos($token, '.') === false) {
+        return null;
+    }
+
+    [$b64json, $b64sig] = explode('.', $token, 2);
+    $json = base64_decode(strtr($b64json, '-_', '+/'));
+    $sig = base64_decode(strtr($b64sig, '-_', '+/'));
+
+    if ($json === false || $sig === false) {
+        return null;
+    }
+
+    $expected = hash_hmac(URL_HASH_ALGO, $json, URL_HASH_SECRET, true);
+    if (!hash_equals($expected, $sig)) {
+        return null;
+    }
+
+    $payload = json_decode($json, true);
+    if (!is_array($payload) || !isset($payload['p'])) {
+        return null;
+    }
+
+    if (isset($payload['e']) && time() > (int) $payload['e']) {
+        return null;
+    }
+
+    return $payload;
+}
+
+/**
+ * Produce a fully-qualified, hashed URL that points to the `link.php`
+ * verification endpoint. Example: publicUrl(appHashedPublicUrl('/path'))
+ */
+function appHashedPublicUrl(string $path, int $ttl = 3600): string
+{
+    $token = createUrlToken($path, $ttl);
+    return APP_PUBLIC_URL . appUrl('/link.php?t=' . rawurlencode($token));
+}
+
 function roleLabel(string $role): string
 {
     return ROLE_LABELS[$role] ?? ucfirst(str_replace('_', ' ', $role));
